@@ -162,9 +162,24 @@ function inheritedCapabilityCeiling(inherited: InheritedChildRuntime | undefined
 	return inherited?.capabilityCeiling;
 }
 
+/** Pass bounded Project Context to child extensions only when inheritance was explicitly enabled. */
+export function inheritedProjectContextEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+	const env: Record<string, string> = {};
+	const root = source.PI_PROJECT_ROOT;
+	const context = source.PI_PROJECT_CONTEXT_JSON;
+	if (root && root.length <= 4096) env.PI_PROJECT_ROOT = root;
+	if (context && context.length <= 16_384) {
+		try {
+			const value: unknown = JSON.parse(context);
+			if (value && typeof value === "object" && typeof (value as { projectRoot?: unknown }).projectRoot === "string" && typeof (value as { projectId?: unknown }).projectId === "string") env.PI_PROJECT_CONTEXT_JSON = context;
+		} catch { /* malformed context is not propagated */ }
+	}
+	return env;
+}
+
 /** Environment values external child extensions read in the runner, which hosts only children. */
 function childProcessEnv(input: BuildInProcessChildLaunchInput, toolPlan: PiLaunchToolPlan): Record<string, string | undefined> {
-	const env: Record<string, string | undefined> = {};
+	const env: Record<string, string | undefined> = input.inheritProjectContext ? inheritedProjectContextEnv() : {};
 	env[PI_SUBAGENT_EXTENSION_BINDINGS_ENV] = encodeExtensionBindings(input.extensionBindings);
 	// Selectors resolved against Pi's built-in MCP never reach an adapter.
 	if (toolPlan.builtinMcpTools) env[MCP_DIRECT_TOOLS_ENV] = "__none__";
@@ -346,7 +361,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		// A foreground child gets only its own bindings, so it never sees those of the session that launched it.
 		...(input.host === "runner"
 			? { processEnv: childProcessEnv(input, toolPlan) }
-			: { processEnv: { [PI_SUBAGENT_EXTENSION_BINDINGS_ENV]: encodeExtensionBindings(input.extensionBindings) }, restoreProcessEnv: true }),
+			: { processEnv: { ...(input.inheritProjectContext ? inheritedProjectContextEnv() : {}), [PI_SUBAGENT_EXTENSION_BINDINGS_ENV]: encodeExtensionBindings(input.extensionBindings) }, restoreProcessEnv: true }),
 		runtime: config,
 		noSkills: !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,
