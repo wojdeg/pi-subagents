@@ -177,9 +177,17 @@ export function inheritedProjectContextEnv(source: NodeJS.ProcessEnv = process.e
 	return env;
 }
 
+function requiredBudgetGatewayChildEnv(toolPlan: PiLaunchToolPlan): Record<string, string> {
+	if (!toolPlan.requiredExtensions.some(({ id }) => id === "budget-gateway")) return {};
+	const env: Record<string, string> = { PI_BUDGET_CHILD: "1" };
+	if (process.env.BUDGET_WORKFLOW_ID !== undefined) env.BUDGET_WORKFLOW_ID = process.env.BUDGET_WORKFLOW_ID;
+	return env;
+}
+
 /** Environment values external child extensions read in the runner, which hosts only children. */
 function childProcessEnv(input: BuildInProcessChildLaunchInput, toolPlan: PiLaunchToolPlan): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = input.inheritProjectContext ? inheritedProjectContextEnv() : {};
+	Object.assign(env, requiredBudgetGatewayChildEnv(toolPlan));
 	env[PI_SUBAGENT_EXTENSION_BINDINGS_ENV] = encodeExtensionBindings(input.extensionBindings);
 	// Selectors resolved against Pi's built-in MCP never reach an adapter.
 	if (toolPlan.builtinMcpTools) env[MCP_DIRECT_TOOLS_ENV] = "__none__";
@@ -361,7 +369,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		// A foreground child gets only its own bindings, so it never sees those of the session that launched it.
 		...(input.host === "runner"
 			? { processEnv: childProcessEnv(input, toolPlan) }
-			: { processEnv: { ...(input.inheritProjectContext ? inheritedProjectContextEnv() : {}), [PI_SUBAGENT_EXTENSION_BINDINGS_ENV]: encodeExtensionBindings(input.extensionBindings) }, restoreProcessEnv: true }),
+			: { processEnv: { ...(input.inheritProjectContext ? inheritedProjectContextEnv() : {}), ...requiredBudgetGatewayChildEnv(toolPlan), [PI_SUBAGENT_EXTENSION_BINDINGS_ENV]: encodeExtensionBindings(input.extensionBindings) }, restoreProcessEnv: true }),
 		runtime: config,
 		noSkills: !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,

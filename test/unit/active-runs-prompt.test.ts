@@ -53,6 +53,9 @@ function promptSections(config: Record<string, unknown>): Record<string, string 
 	try {
 		fs.mkdirSync(path.join(home, "extensions", "subagent"), { recursive: true });
 		fs.writeFileSync(path.join(home, "extensions", "subagent", "config.json"), JSON.stringify(config));
+		const budgetGatewayDir = path.join(home, "extensions", "budget-gateway");
+		fs.mkdirSync(budgetGatewayDir, { recursive: true });
+		fs.writeFileSync(path.join(budgetGatewayDir, "index.mjs"), "export default function budgetGateway() {}\n");
 		const env = { ...process.env, PI_CODING_AGENT_DIR: home };
 		delete env[SUBAGENT_CHILD_ENV];
 		const output = execFileSync(process.execPath, ["--experimental-strip-types", "--import", "./test/support/register-loader.mjs", "--input-type=module", "--eval", script], { cwd: root, env, encoding: "utf-8" });

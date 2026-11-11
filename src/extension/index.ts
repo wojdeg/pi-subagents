@@ -61,6 +61,7 @@ import { createParentWake } from "../shared/parent-wake.ts";
 import { handleSubagentSteeringNotice, type SubagentSteeringMessageDetails } from "./steering-notices.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/child-runtime-config.ts";
 import { disposeChildSessionsForParent } from "../runs/shared/child-session.ts";
+import { registerRequiredChildExtensions, type RequiredChildExtensionRegistration } from "../api/required-child-extensions.ts";
 import { resolveCurrentSubagentCapabilityCeiling } from "../runs/shared/capability-ceiling.ts";
 import { loadConfig, resolveAsyncByDefault, resolveConfigDefaultTimeoutMs, resolveScheduledStoreRoot } from "./config.ts";
 import { buildSubagentToolDescription, buildSubagentToolPromptMetadata } from "./tool-description.ts";
@@ -1225,7 +1226,20 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		compactionResumeTimer = setTimeout(resumeWhenIdle, COMPACTION_RESUME_POLL_MS);
 	});
 
+	// When the existing optional Budget Gateway is installed, make it mandatory for child runtimes.
+	const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+	const budgetGatewayPath = path.join(agentDir, "extensions", "budget-gateway", "index.mjs");
+	let budgetExtensionRegistration: RequiredChildExtensionRegistration | undefined;
 	pi.on("session_start", (event, ctx) => {
+		const isChildSession = process.env.PI_BUDGET_CHILD === "1" || Boolean(ctx.sessionManager.getHeader?.()?.parentSession);
+		if (!isChildSession) {
+			budgetExtensionRegistration?.dispose();
+			budgetExtensionRegistration = undefined;
+			const sessionId = ctx.sessionManager.getSessionId();
+			if (sessionId && fs.existsSync(budgetGatewayPath)) {
+				budgetExtensionRegistration = registerRequiredChildExtensions({ sessionId, extensions: [{ id: "budget-gateway", path: budgetGatewayPath }], requireForAllRunners: true });
+			}
+		}
 		parentWake.bindSession(ctx);
 		completionNotifier.bindSession(ctx.sessionManager);
 		installRuntime(ctx);
@@ -1259,6 +1273,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event) => {
+		budgetExtensionRegistration?.dispose();
+		budgetExtensionRegistration = undefined;
 		// Captured first: runtimeEntry.cleanup() below clears state.parentSessionFile.
 		const parentSessionFile = state.parentSessionFile ?? undefined;
 		sessionSwitchGuard.sessionShutdown(event);
