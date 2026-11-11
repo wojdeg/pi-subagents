@@ -55,19 +55,21 @@ export function snapshotRequiredChildExtensions(value: unknown, label = "Require
 	}));
 }
 
-interface Registry { version: 1; bySession: Map<string, RequiredChildExtensionSnapshot> }
+interface Registry { version: 1; bySession: Map<string, RequiredChildExtensionSnapshot>; references: Map<string, number> }
 
 function registry(): Registry {
 	const key = Symbol.for("pi-subagents.required-child-extensions.v1");
 	const root = globalThis as Record<PropertyKey, unknown>;
 	const existing = root[key];
 	if (existing === undefined) {
-		const created: Registry = { version: 1, bySession: new Map() };
+		const created: Registry = { version: 1, bySession: new Map(), references: new Map() };
 		root[key] = created;
 		return created;
 	}
 	if (!existing || typeof existing !== "object" || !("version" in existing) || existing.version !== 1 || !("bySession" in existing) || !(existing.bySession instanceof Map)) throw new Error("Malformed or unsupported required child extension registry.");
-	return { version: 1, bySession: existing.bySession };
+	const shared = existing as Registry;
+	if (!(shared.references instanceof Map)) shared.references = new Map([...shared.bySession.keys()].map((id) => [id, 1]));
+	return shared;
 }
 
 /** Register one immutable host-required extension snapshot for a parent session. */
@@ -78,9 +80,24 @@ export function registerRequiredChildExtensions(input: RegisterRequiredChildExte
 	const canonical = snapshotRequiredChildExtensions(input.extensions, "Required child extensions", true);
 	const frozen = input.requireForAllRunners ? Object.freeze(canonical.map((entry) => Object.freeze({ ...entry, requireForAllRunners: true as const }))) : canonical;
 	const store = registry();
-	if (store.bySession.has(input.sessionId)) throw new Error(`Required child extensions are already registered for session '${input.sessionId}'; dispose them first.`);
-	store.bySession.set(input.sessionId, frozen);
-	return { dispose() { if (store.bySession.get(input.sessionId) === frozen) store.bySession.delete(input.sessionId); } };
+	const existing = store.bySession.get(input.sessionId);
+	let registered = frozen;
+	if (existing) {
+		if (JSON.stringify(existing) !== JSON.stringify(frozen)) throw new Error(`Required child extensions are already registered for session '${input.sessionId}'; dispose them first.`);
+		registered = existing;
+		store.references.set(input.sessionId, (store.references.get(input.sessionId) ?? 1) + 1);
+	} else {
+		store.bySession.set(input.sessionId, frozen);
+		store.references.set(input.sessionId, 1);
+	}
+	let disposed = false;
+	return { dispose() {
+		if (disposed || store.bySession.get(input.sessionId) !== registered) return;
+		disposed = true;
+		const remaining = (store.references.get(input.sessionId) ?? 1) - 1;
+		if (remaining > 0) store.references.set(input.sessionId, remaining);
+		else { store.references.delete(input.sessionId); store.bySession.delete(input.sessionId); }
+	} };
 }
 
 export function resolveRequiredChildExtensions(sessionId: string | undefined): RequiredChildExtensionSnapshot {

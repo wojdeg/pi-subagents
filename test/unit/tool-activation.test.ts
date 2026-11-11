@@ -7,6 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import { toToolDeclaration, validateToolArguments } from "@earendil-works/pi-ai";
 import { ensureSupervisorChannelDir, registerNativeSupervisorClient, resolveSupervisorChannelDir, TOP_LEVEL_SUPERVISOR_REFUSAL } from "../../src/intercom/native-supervisor-channel.ts";
 import registerSubagentExtension from "../../src/extension/index.ts";
+import { resolveRequiredChildExtensions } from "../../src/shared/required-child-extensions.ts";
 import { PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../src/shared/utils.ts";
 import { resolvePiPackageRoot } from "../../src/runs/shared/pi-spawn.ts";
 import { registerBackgroundWorkProvider } from "../../src/api/background-work.ts";
@@ -19,10 +20,10 @@ type Tool = { name: string; description?: string; promptSnippet?: string; parame
 const runtimes: Array<{ handlers: Map<string, Handler[]>; context: any }> = [];
 
 // `branch`: the session's full message history, which getBranch returns; it defaults to the compacted context's messages.
-type RuntimeOptions = { config?: Record<string, unknown>; model?: unknown; branch?: any[] };
+type RuntimeOptions = { config?: Record<string, unknown>; model?: unknown; branch?: any[]; parentSession?: string };
 const DYNAMIC: RuntimeOptions = { config: { toolActivation: "dynamic" } };
 
-function createRuntime(messages: any[] = [], excluded: string[] = [], missingApis: string[] = [], options: RuntimeOptions = {}) {
+function createRuntime(messages: any[] = [], excluded: string[] = [], missingApis: string[] = [], options: RuntimeOptions = {}, sessionId = "activation-session", installBudgetGateway = false) {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Tool>();
 	let activeNames = ["read"];
@@ -56,7 +57,8 @@ function createRuntime(messages: any[] = [], excluded: string[] = [], missingApi
 		cwd: process.cwd(), isIdle() { return false; }, hasUI: false, model: options.model as any,
 		ui: { setWidget() {}, theme: { fg(_name: string, text: string) { return text; }, bg(_name: string, text: string) { return text; }, bold(text: string) { return text; } } },
 		sessionManager: {
-			getSessionId() { return "activation-session"; }, getSessionFile() { return null; }, getEntries() { return []; },
+			getSessionId() { return sessionId; }, getSessionFile() { return null; }, getEntries() { return []; },
+			getHeader() { return options.parentSession ? { parentSession: options.parentSession } : undefined; },
 			buildSessionContext() { return { messages }; },
 			getBranch() { return (options.branch ?? messages).map((message) => message.role === "compactionSummary" ? { type: "compaction" } : { type: "message", message }); },
 		},
@@ -65,6 +67,11 @@ function createRuntime(messages: any[] = [], excluded: string[] = [], missingApi
 	const childEnv = process.env.PI_SUBAGENT_CHILD;
 	const priorAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "tool-activation-agent-"));
+	if (installBudgetGateway) {
+		const budgetGatewayDir = path.join(agentDir, "extensions", "budget-gateway");
+		fs.mkdirSync(budgetGatewayDir, { recursive: true });
+		fs.writeFileSync(path.join(budgetGatewayDir, "index.mjs"), "export default function budgetGateway() {}\n");
+	}
 	if (options.config) {
 		fs.mkdirSync(path.join(agentDir, "extensions", "subagent"), { recursive: true });
 		fs.writeFileSync(path.join(agentDir, "extensions", "subagent", "config.json"), JSON.stringify(options.config));
@@ -109,6 +116,39 @@ afterEach(async () => {
 });
 
 describe("subagent tool activation", () => {
+	it("requires the optional Budget Gateway only when it is installed and releases the registration on shutdown", async () => {
+		const installedSessionId = randomUUID();
+		const installed = createRuntime([], [], [], DYNAMIC, installedSessionId, true);
+		await installed.emit("session_start", { type: "session_start", reason: "startup" });
+		assert.deepEqual(resolveRequiredChildExtensions(installedSessionId).map((entry) => entry.id), ["budget-gateway"]);
+
+		const absentSessionId = randomUUID();
+		const absent = createRuntime([], [], [], DYNAMIC, absentSessionId, false);
+		await absent.emit("session_start", { type: "session_start", reason: "startup" });
+		assert.deepEqual(resolveRequiredChildExtensions(absentSessionId), []);
+
+		const headerChildSessionId = randomUUID();
+		const headerChild = createRuntime([], [], [], { ...DYNAMIC, parentSession: "parent-session" }, headerChildSessionId, true);
+		await headerChild.emit("session_start", { type: "session_start", reason: "startup" });
+		assert.deepEqual(resolveRequiredChildExtensions(headerChildSessionId), []);
+
+		const priorChildFlag = process.env.PI_BUDGET_CHILD;
+		try {
+			process.env.PI_BUDGET_CHILD = "1";
+			const envChildSessionId = randomUUID();
+			const envChild = createRuntime([], [], [], DYNAMIC, envChildSessionId, true);
+			await envChild.emit("session_start", { type: "session_start", reason: "startup" });
+			assert.deepEqual(resolveRequiredChildExtensions(envChildSessionId), []);
+		} finally {
+			if (priorChildFlag === undefined) delete process.env.PI_BUDGET_CHILD;
+			else process.env.PI_BUDGET_CHILD = priorChildFlag;
+		}
+
+		for (const handler of installed.handlers.get("session_shutdown") ?? []) await handler({ type: "session_shutdown", reason: "quit" }, installed.context);
+		installed.handlers.delete("session_shutdown");
+		assert.deepEqual(resolveRequiredChildExtensions(installedSessionId), []);
+	});
+
 	it("starts fresh parents with a compact self-service loader and declares bg_wait and subagent_supervisor only with subagent", async () => {
 		const runtime = createRuntime([], [], [], DYNAMIC);
 		await runtime.emit("session_start", { type: "session_start", reason: "startup" });

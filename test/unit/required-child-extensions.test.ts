@@ -56,6 +56,20 @@ describe("required child extension host policy", () => {
 		} finally { fs.rmSync(dir, { recursive: true, force: true }); }
 	});
 
+	it("shares identical registrations until every runtime releases its lease", () => {
+		const { dir, file } = fixture();
+		const sessionId = `required-${Date.now()}-shared-registry`;
+		const input = { sessionId, extensions: [{ id: "budget-gateway", path: file }], requireForAllRunners: true };
+		const first = registerRequiredChildExtensions(input);
+		const second = registerRequiredChildExtensions(input);
+		try {
+			first.dispose();
+			assert.equal(resolveRequiredChildExtensions(sessionId)[0]?.id, "budget-gateway");
+			second.dispose();
+			assert.deepEqual(resolveRequiredChildExtensions(sessionId), []);
+		} finally { first.dispose(); second.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
+	});
+
 	it("appends required paths after ordinary resolution and exposes only safe IDs", () => {
 		const { dir, file } = fixture();
 		const sessionId = `required-${Date.now()}-launch`;
@@ -144,6 +158,29 @@ describe("Project Context environment inheritance", () => {
 	});
 });
 
+describe("Budget Gateway child environment", () => {
+	it("passes the parent workflow identity only to children requiring the gateway", () => {
+		const previous = process.env.BUDGET_WORKFLOW_ID;
+		process.env.BUDGET_WORKFLOW_ID = "root-session-id";
+		try {
+			const requiredExtensions = [{ id: "budget-gateway", path: "/tmp/budget-gateway.mjs", requireForAllRunners: true }];
+			const foreground = buildInProcessChildLaunch({ ...baseInput("budget-env-parent"), requiredExtensions });
+			const background = buildRunnerChildLaunch({ agent: "worker", task: "parallel", inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, requiredExtensions }, { cwd: process.cwd(), id: "budget-env-run", flatIndex: 0 }, { sessionEnabled: false, watchdogStatus() {} });
+			const ordinary = buildInProcessChildLaunch(baseInput("budget-env-ordinary"));
+			for (const launch of [foreground.session, background.session]) {
+				assert.equal(launch.processEnv?.BUDGET_WORKFLOW_ID, "root-session-id");
+				assert.equal(launch.processEnv?.PI_BUDGET_CHILD, "1");
+				assert.ok(launch.requiredExtensions?.some((entry) => entry.id === "budget-gateway"));
+			}
+			assert.equal(ordinary.session.processEnv?.BUDGET_WORKFLOW_ID, undefined);
+			assert.equal(ordinary.session.processEnv?.PI_BUDGET_CHILD, undefined);
+		} finally {
+			if (previous === undefined) delete process.env.BUDGET_WORKFLOW_ID;
+			else process.env.BUDGET_WORKFLOW_ID = previous;
+		}
+	});
+});
+
 describe("ordinary extension failures next to required child extensions", () => {
 	for (const [host, failure] of [["runner", "broken ambient"], ["parent", "missing agent extension"], ["runner", "missing agent extension"]] as const) {
 		it(`starts the child despite a ${failure} in the ${host} loader`, async () => {
@@ -171,6 +208,27 @@ describe("ordinary extension failures next to required child extensions", () => 
 			} as PiCodingAgentModule;
 			await rejectsChildCreate(dir, agentDir, pi, launch.session, /reached session creation/);
 			assert.deepEqual(errors, [failure === "broken ambient" ? broken : missing]);
+		});
+	}
+});
+
+describe("missing mandatory extension fails before a child session can be created", () => {
+	for (const host of ["parent", "runner"] as const) {
+		it(`refuses a ${host} child when the required Budget Gateway is missing`, async () => {
+			const { dir } = fixture();
+			const agentDir = path.join(dir, "agent"); fs.mkdirSync(agentDir);
+			const missing = path.join(dir, "missing-budget-gateway.mjs");
+			const input = { cwd: dir, requiredExtensions: [{ id: "budget-gateway", path: missing }], inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false };
+			const launch = host === "parent" ? buildInProcessChildLaunch({ ...baseInput("missing-budget"), ...input })
+				: buildRunnerChildLaunch({ agent: "worker", task: "test", ...input }, { cwd: dir, id: "missing-budget", flatIndex: 0 }, { sessionEnabled: false, watchdogStatus() {} });
+			let sessionCreates = 0;
+			const pi = {
+				ModelRuntime: { create: async () => ({}) }, SettingsManager, DefaultResourceLoader,
+				SessionManager: { inMemory: () => ({}) },
+				createAgentSession: async () => { sessionCreates++; throw new Error("child session must not be created"); },
+			} as unknown as PiCodingAgentModule;
+			await rejectsChildCreate(dir, agentDir, pi, launch.session, /Required child extension failed to load/);
+			assert.equal(sessionCreates, 0, "no child session is exposed, so its first model request cannot run");
 		});
 	}
 });
@@ -251,7 +309,8 @@ describe("required child extension loaded identities", () => {
 					: scenario === "load failure" ? "throw new Error('load failed');"
 					: scenario === "provider failure" ? "pi.registerProvider('bad', {});"
 					: scenario === "startup failure" ? "pi.on('session_start', () => { throw new Error('startup failed'); });" : "";
-				fs.writeFileSync(requiredFile, `import fs from 'node:fs'; export default (pi) => { if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, 'x'); ${action} } };\n`);
+				const initialization = scenario === "startup failure" ? action : `if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, 'x'); ${action} }`;
+				fs.writeFileSync(requiredFile, `import fs from 'node:fs'; export default (pi) => { ${initialization} };\n`);
 				const ordinary = path.join(dir, "ordinary.mjs");
 				fs.writeFileSync(ordinary, "export default () => {};\n");
 				const requiredPath = fs.realpathSync(requiredFile);
