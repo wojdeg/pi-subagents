@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { registerRequiredChildExtensions } from "../../src/api/required-child-extensions.ts";
 import { assertRequiredChildExtensionsAdmitted, resolveRequiredChildExtensions, snapshotRequiredChildExtensions } from "../../src/shared/required-child-extensions.ts";
-import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
+import { buildInProcessChildLaunch, inheritedProjectContextEnv } from "../../src/runs/shared/child-launch.ts";
 import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
 import { buildRunnerChildLaunch } from "../../src/runs/background/runner-child-launch.ts";
 import { createDefaultChildSessionFactory, type ChildSessionLaunch, type PiCodingAgentModule } from "../../src/runs/shared/child-session.ts";
@@ -101,6 +101,46 @@ describe("required child extension host policy", () => {
 			assert.equal(nested.session.extensionPaths.at(-1), fs.realpathSync(file));
 			assert.deepEqual(nested.launchResolvedExtensions.required, ["nested-provider"]);
 		} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+	});
+});
+
+describe("Project Context environment inheritance", () => {
+	it("passes bounded context to parent and runner children only when explicitly enabled", () => {
+		const previousRoot = process.env.PI_PROJECT_ROOT;
+		const previousContext = process.env.PI_PROJECT_CONTEXT_JSON;
+		const root = "/tmp/pi-project-context-test";
+		const context = JSON.stringify({ projectId: "project-0123456789abcdefabcd", projectRoot: root });
+		process.env.PI_PROJECT_ROOT = root;
+		process.env.PI_PROJECT_CONTEXT_JSON = context;
+		try {
+			const parentOff = buildInProcessChildLaunch({ ...baseInput("context-parent-off"), inheritProjectContext: false });
+			const runnerOff = buildRunnerChildLaunch({ agent: "worker", task: "context", inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false }, { cwd: root, id: "context-runner-off", flatIndex: 0 }, { sessionEnabled: false, watchdogStatus() {} });
+			assert.equal(parentOff.session.processEnv?.PI_PROJECT_ROOT, undefined);
+			assert.equal(parentOff.session.processEnv?.PI_PROJECT_CONTEXT_JSON, undefined);
+			assert.equal(runnerOff.session.processEnv?.PI_PROJECT_ROOT, undefined);
+			assert.equal(runnerOff.session.processEnv?.PI_PROJECT_CONTEXT_JSON, undefined);
+
+			const parentOn = buildInProcessChildLaunch({ ...baseInput("context-parent-on"), inheritProjectContext: true });
+			const runnerOn = buildRunnerChildLaunch({ agent: "worker", task: "context", inheritProjectContext: true, inheritGlobalContext: false, inheritSkills: false }, { cwd: root, id: "context-runner-on", flatIndex: 0 }, { sessionEnabled: false, watchdogStatus() {} });
+			assert.equal(parentOn.session.processEnv?.PI_PROJECT_ROOT, root);
+			assert.equal(parentOn.session.processEnv?.PI_PROJECT_CONTEXT_JSON, context);
+			assert.equal(runnerOn.session.processEnv?.PI_PROJECT_ROOT, root);
+			assert.equal(runnerOn.session.processEnv?.PI_PROJECT_CONTEXT_JSON, context);
+		} finally {
+			if (previousRoot === undefined) delete process.env.PI_PROJECT_ROOT;
+			else process.env.PI_PROJECT_ROOT = previousRoot;
+			if (previousContext === undefined) delete process.env.PI_PROJECT_CONTEXT_JSON;
+			else process.env.PI_PROJECT_CONTEXT_JSON = previousContext;
+		}
+	});
+
+	it("filters malformed and oversized context values", () => {
+		assert.deepEqual(inheritedProjectContextEnv({ PI_PROJECT_CONTEXT_JSON: "not-json" }), {});
+		assert.deepEqual(inheritedProjectContextEnv({ PI_PROJECT_CONTEXT_JSON: JSON.stringify({ projectRoot: "/tmp/project" }) }), {});
+		const oversizedContext = JSON.stringify({ projectRoot: "/tmp/project", projectId: "project-0123456789abcdefabcd", padding: "x".repeat(16_384) });
+		assert.equal(oversizedContext.length > 16_384, true);
+		assert.deepEqual(inheritedProjectContextEnv({ PI_PROJECT_CONTEXT_JSON: oversizedContext }), {});
+		assert.deepEqual(inheritedProjectContextEnv({ PI_PROJECT_ROOT: "x".repeat(4097), PI_PROJECT_CONTEXT_JSON: "{}" }), {});
 	});
 });
 
