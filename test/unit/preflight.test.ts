@@ -89,6 +89,22 @@ describe("public launch contract preflight", () => {
 		} finally { registration.dispose(); }
 	});
 
+	it("resolves a case-insensitive agent name through the public launch preflight", async () => {
+		const cwd = path.join(tempDir, "casefold-repo");
+		writeAgent(path.join(cwd, ".pi", "agents", "scout.md"), `---
+name: scout
+description: Scout agent
+---
+Inspect.
+`);
+
+		const result = await resolveSubagentLaunchContract({ agent: "Scout", cwd });
+
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		assert.equal(result.contract.agent.name, "scout");
+	});
+
 	it("validates a Claude Code model and level the way the launch does", async () => {
 		const cwd = path.join(tempDir, "cc-repo");
 		fs.mkdirSync(cwd, { recursive: true });
