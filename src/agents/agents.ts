@@ -771,6 +771,28 @@ export function resolveAgentName(name: string, agents: AgentConfig[]): { agent?:
 		if (effective.agent) return effective;
 		return { error: `Ambiguous agent alias '${name}': ${aliases.map((agent) => agent.name).join(", ")}` };
 	}
+
+	const folded = raw.toLowerCase();
+	const canonicalInsensitive = agents.filter((agent) => agent.name.toLowerCase() === folded);
+	if (canonicalInsensitive.length > 0) {
+		const effective = effectiveAgentMatch(canonicalInsensitive);
+		if (effective.agent) return effective;
+		return { error: `Ambiguous agent name '${name}': ${canonicalInsensitive.map((agent) => agent.name).join(", ")}` };
+	}
+
+	const localInsensitive = agents.filter((agent) => agent.localName?.toLowerCase() === folded);
+	if (localInsensitive.length > 0) {
+		const effective = effectiveAgentMatch(localInsensitive);
+		if (effective.agent) return effective;
+		return { error: `Ambiguous local agent name '${name}': ${localInsensitive.map((agent) => agent.name).join(", ")}` };
+	}
+
+	const aliasesInsensitive = agents.filter((agent) => agent.aliases?.some((alias) => alias.toLowerCase() === folded));
+	if (aliasesInsensitive.length > 0) {
+		const effective = effectiveAgentMatch(aliasesInsensitive);
+		if (effective.agent) return effective;
+		return { error: `Ambiguous agent alias '${name}': ${aliasesInsensitive.map((agent) => agent.name).join(", ")}` };
+	}
 	return {};
 }
 

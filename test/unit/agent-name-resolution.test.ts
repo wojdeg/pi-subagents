@@ -42,6 +42,61 @@ describe("resolveAgentName", () => {
 
 		assert.match(result.error ?? "", /Ambiguous local agent name 'scout': code-analysis\.scout, repository\.scout/);
 	});
+
+	it("resolves a unique canonical name without case sensitivity after exact lookup", () => {
+		const agent = makeAgent("scout");
+
+		assert.equal(resolveAgentName("Scout", [agent]).agent, agent);
+	});
+
+	it("keeps exact local names ahead of case-insensitive canonical names", () => {
+		const canonical = makeAgent("Scout");
+		const local = makeAgent("project.lookup", "scout");
+
+		assert.equal(resolveAgentName("scout", [canonical, local]).agent, local);
+	});
+
+	it("rejects case-insensitive canonical collisions rather than choosing arbitrarily", () => {
+		const result = resolveAgentName("SCOUT", [makeAgent("scout"), makeAgent("Scout")]);
+
+		assert.match(result.error ?? "", /Ambiguous agent name 'SCOUT': scout, Scout/);
+	});
+
+	it("resolves local names and aliases case-insensitively after exact categories", () => {
+		const local = makeAgent("package.scout", "Scout");
+		const alias = { ...makeAgent("package.researcher"), aliases: ["Research"] };
+
+		assert.equal(resolveAgentName("scout", [local]).agent, local);
+		assert.equal(resolveAgentName("RESEARCH", [alias]).agent, alias);
+	});
+
+	it("prefers exact aliases over case-insensitive canonical names", () => {
+		const canonical = makeAgent("SCOUT");
+		const alias = { ...makeAgent("package.lookup"), aliases: ["scout"] };
+
+		assert.equal(resolveAgentName("scout", [canonical, alias]).agent, alias);
+	});
+
+	it("prioritizes case-insensitive canonical names over local names", () => {
+		const canonical = makeAgent("Scout");
+		const local = makeAgent("package.lookup", "SCOUT");
+
+		assert.equal(resolveAgentName("scout", [canonical, local]).agent, canonical);
+	});
+
+	it("rejects case-insensitive local-name and alias collisions", () => {
+		const localResult = resolveAgentName("SCOUT", [
+			makeAgent("package.one", "Scout"),
+			makeAgent("package.two", "scout"),
+		]);
+		const aliasResult = resolveAgentName("RESEARCH", [
+			{ ...makeAgent("package.one"), aliases: ["Research"] },
+			{ ...makeAgent("package.two"), aliases: ["research"] },
+		]);
+
+		assert.match(localResult.error ?? "", /Ambiguous local agent name 'SCOUT'/);
+		assert.match(aliasResult.error ?? "", /Ambiguous agent alias 'RESEARCH'/);
+	});
 });
 
 describe("findConfiguredProjectRoot", () => {
