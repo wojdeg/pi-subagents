@@ -43,6 +43,26 @@ poll, or call `bg_wait` for ordinary children. Use `bg_wait` only for provider
 or detached work that has no native notification and whose result this turn
 needs.
 
+### T3 Code hosts
+
+When delegation is operator-authorized in T3 Code, prefer the app-owned
+`delegate_task` tool if the host exposes it and it can satisfy the task. Use the
+native `subagent` runner when T3 is unavailable, the user or project chooses
+native execution, or the task needs native Pi-child capabilities. Treat these
+as distinct backends: do not assume shared identifiers, lifecycle, controls,
+permissions, or artifact locations, and do not launch the same task through
+both. Call only the T3 tool actually exposed by the host; this package does not
+implement or guess a T3 API.
+
+For delegated work, report which backend ran and whatever identity, status,
+and result evidence it actually exposes. A launch receipt proves dispatch, not
+completion. If the backend exposes a status or artifact, inspect it before
+claiming completion. If status or result evidence is unavailable or cannot be
+retrieved, say so and leave the outcome unverified; do not infer completion
+from dispatch. In the final response, summarize what the child did, link or name
+its artifact when available, and distinguish unverified claims from
+independently checked evidence.
+
 ## Workflow scripts
 
 Use a script when later steps depend on earlier results, or for keyed,

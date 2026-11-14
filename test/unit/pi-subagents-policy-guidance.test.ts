@@ -25,6 +25,18 @@ describe("pi-subagents delegation policy guidance", () => {
 		assert.doesNotMatch(guidance, /use this at the start of non-trivial work/i);
 	});
 
+	it("keeps T3 and native delegation distinct while requiring evidence in final reports", () => {
+		const text = readProjectFile("skills/pi-subagents/SKILL.md");
+		assert.match(text, /When delegation is operator-authorized in T3 Code, prefer the app-owned\s+`delegate_task` tool if the host exposes it and it can satisfy the task/i);
+		assert.match(text, /Use the\s+native `subagent` runner when T3 is unavailable, the user or project chooses\s+native execution, or the task needs native Pi-child capabilities/i);
+		assert.match(text, /do not assume shared\s+identifiers, lifecycle, controls,\s+permissions, or artifact locations/i);
+		assert.match(text, /this package does not\s+implement or guess a T3 API/i);
+		assert.match(text, /report which backend ran and whatever identity, status,\s+and result evidence it actually exposes/i);
+		assert.match(text, /If the backend exposes a status or artifact, inspect it before\s+claiming completion/i);
+		assert.match(text, /If status or result evidence is unavailable or cannot be\s+retrieved, say so and leave the outcome unverified/i);
+		assert.match(text, /distinguish unverified claims from\s+independently checked evidence/i);
+	});
+
 	it("says which pi-subagents tools codemode scripts cannot call", () => {
 		const text = readProjectFile("skills/pi-subagents/SKILL.md");
 		assert.match(text, /`subagent`, `subagents_enable`, `subagent_supervisor`, `contact_supervisor`, and `structured_output`[^\n]*model-only/);
